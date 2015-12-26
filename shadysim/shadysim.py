@@ -22,9 +22,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
+# December 2014, Dieter Spaar: add OTA security for sysmoSIM SJS1
 
 from pySim.commands import SimCardCommands
-from pySim.utils import swap_nibbles, rpad, b2h
+from pySim.utils import swap_nibbles, rpad, b2h, i2h
 try:
 	import argparse
 except Exception, err:
@@ -32,6 +33,11 @@ except Exception, err:
 import zipfile
 import time
 import struct
+import binascii
+
+# Python Cryptography Toolkit (pycrypto)
+
+from Crypto.Cipher import DES3
 
 #------
 
@@ -51,19 +57,144 @@ class AppLoaderCommands(object):
 		self._tp = transport
 		self._apduCounter = 0;
 
+	def test_rfm(self):
+
+		# use only one of the following
+
+		if (1):
+			# SIM: select MF/GSM/EF_IMSI and read content (requires keyset two)
+			if not args.smpp:
+				print self.send_wrapped_apdu_rfm_sim('A0A40000023F00' + 'A0A40000027F20' + 'A0A40000026F07' + 'A0B0000009');
+			else:
+				self.send_wrapped_apdu_rfm_sim('A0A40000023F00' + 'A0A40000027F20' + 'A0A40000026F07' + 'A0B0000009');
+		else:
+			# USIM: select MF/GSM/EF_IMSI and read content (requires keyset three)
+			if not args.smpp:
+				print self.send_wrapped_apdu_rfm_usim('00A40004023F00' + '00A40004027F20' + '00A40004026F07' + '00B0000009');
+			else:
+				self.send_wrapped_apdu_rfm_usim('00A40004023F00' + '00A40004027F20' + '00A40004026F07' + '00B0000009');
+
+		return;
+
 	def send_terminal_profile(self):
-		return self._tp.send_apdu_checksw('A010000011FFFF000000000000000000000000000000')
+		rv = self._tp.send_apdu('A010000011FFFF000000000000000000000000000000')
+		if "91" == rv[1][0:2]:
+			# In case of "91xx" -> Fetch data, execute cmd and reply
+			self._tp.send_apdu('A0120000' + rv[1][2:4]) # FETCH
+			# otherwise "9300" (SIM Busy)
+			return self._tp.send_apdu('A01400000C810301030002028281030100') # TERMINAL RESPONSE
+		return rv;
 
 	# Wrap an APDU inside an SMS-PP APDU	
-	def send_wrapped_apdu(self, data):
-		# Command packet header
-		# SPI: PoR required
-		# TAR: Remote App Management (000000)
-		envelopeData = '0D0001000000000000000000' + ('%02x' % (self._apduCounter & 0xff)) + '00' + data;
-		self._apduCounter = self._apduCounter + 1
+	def send_wrapped_apdu_internal(self, data, tar, msl, kic_index, kid_index):
+		#
+		# See ETSI TS 102 225 and ETSI TS 102 226 for more details
+		# about OTA security.
+		#
+		# So far only no signature check, RC or CC are supported.
+		# The only supported ciphering mode is "Triple DES in outer-CBC
+		# mode using two different keys" which is also used for CC.
 
-		# Command
+		# SPI first octet: set to MSL
+		spi_1 = msl;
+
+		# length of signature
+
+		if ((spi_1 & 0x03) == 0): # no integrity check
+			len_sig = 0;
+		elif ((spi_1 & 0x03) == 1): # RC
+			len_sig = 4;
+		elif ((spi_1 & 0x03) == 2): # CC
+			len_sig = 8;
+		else:
+			print "Invalid spi_1"
+			exit(0);
+
+		pad_cnt = 0;
+		# Padding if Ciphering is used
+		if ((spi_1 & 0x04) != 0): # check ciphering bit
+			len_cipher = 6 + len_sig + (len(data) / 2)
+			pad_cnt = 8 - (len_cipher % 8) # 8 Byte blocksize for DES-CBC (TODO: different padding)
+			# TODO: there is probably a better way to add "pad_cnt" padding bytes
+			for i in range(0, pad_cnt):
+				data = data + '00';
+
+		# CHL + SPI first octet
+		part_head = ('%02x' % (0x0D + len_sig)) + ('%02x' % (spi_1))
+
+		Kic = '00';
+		KID = '00';
+		if ((spi_1 & 0x04) != 0): # check ciphering bit
+			Kic = ('%02x' % (0x05 + (kic_index << 4))) # 05: Triple DES in outer-CBC mode using two different keys
+		if ((spi_1 & 0x03) == 2): # CC
+			KID = ('%02x' % (0x05 + (kid_index << 4))) # 05: Triple DES in outer-CBC mode using two different keys
+
+		# SPI second octet (01: POR required) + Kic + KID + TAR
+		# TODO: depending on the returned data use ciphering (10) and/or a signature (08)
+		part_head = part_head + '01' + Kic + KID + tar;
+
+		# CNTR + PCNTR (CNTR not used)
+		part_cnt = '0000000000' + ('%02x' % (pad_cnt))
+
+		envelopeData = part_head + part_cnt + data;
+
+		# two bytes CPL, CPL is part of RC/CC/DS
+		envelopeData = ('%04x' % (len(envelopeData) / 2 + len_sig)) + envelopeData
+
+		if (len_sig == 8):
+			# Padding
+			temp_data = envelopeData
+			len_cipher = (len(temp_data) / 2)
+			pad_cnt = 8 - (len_cipher % 8) # 8 Byte blocksize for DES-CBC  (TODO: add different padding)
+			# TODO: there is probably a better way to add "pad_cnt" padding bytes
+			for i in range(0, pad_cnt):
+				temp_data = temp_data + '00';
+
+			key = binascii.a2b_hex(args.kid);
+			iv = binascii.a2b_hex('0000000000000000');
+			cipher = DES3.new(key, DES3.MODE_CBC, iv);
+			ciph = cipher.encrypt(binascii.a2b_hex(temp_data));
+			envelopeData = part_cnt + binascii.b2a_hex(ciph[len(ciph) - 8:]) + data;
+		elif (len_sig == 4):
+			crc32 = binascii.crc32(binascii.a2b_hex(envelopeData))
+			envelopeData = part_cnt + ('%08x' % (crc32 & 0xFFFFFFFF)) + data;
+		elif (len_sig == 0):
+			envelopeData = part_cnt + data;
+		else:
+			print "Invalid len_sig"
+			exit(0)
+
+		# Ciphering (CNTR + PCNTR + RC/CC/DS + data)
+
+		if ((spi_1 & 0x04) != 0): # check ciphering bit
+			key = binascii.a2b_hex(args.kic);
+			iv = binascii.a2b_hex('0000000000000000');
+			cipher = DES3.new(key, DES3.MODE_CBC, iv);
+			ciph = cipher.encrypt(binascii.a2b_hex(envelopeData));
+			envelopeData = part_head + binascii.b2a_hex(ciph)
+		else:
+			envelopeData = part_head + envelopeData;
+
+		# -------------------------------------------------------------
+
+		# Command (add UDHI: USIM Toolkit Security Header)
+		# TS 23.048
+		#
+		#   02: UDHDL
+		#   70: IEIA (CPI=70)
+		#   00: IEIDLa
+		#
+		# two bytes CPL
+		# no CHI
+		#
 		envelopeData = '027000' + ('%04x' % (len(envelopeData) / 2)) + envelopeData;
+
+		# For sending via SMPP, those are the data which can be put into
+		# the "hex" field of the "sendwp" XML file (see examples in libsmpp34).
+
+		if args.smpp:
+			print "SMPP: " + envelopeData;
+			return ('00', '9000');
 
 		# SMS-TDPU header: MS-Delivery, no more messages, TP-UD header, no reply path,
 		# TP-OA = TON/NPI 55667788, TP-PID = SIM Download, BS timestamp
@@ -75,14 +206,32 @@ class AppLoaderCommands(object):
 		
 		# d1 = SMS-PP Download, d2 = Cell Broadcast Download
 		envelopeData = 'd1' + hex_ber_length(envelopeData) + envelopeData;
-		response = self._tp.send_apdu_checksw('a0c20000' + ('%02x' % (len(envelopeData) / 2)) + envelopeData)[0]
+		(response, sw) = self._tp.send_apdu('a0c20000' + ('%02x' % (len(envelopeData) / 2)) + envelopeData)
+		if "9e" == sw[0:2]: # more bytes available, get response
+			response = self._tp.send_apdu_checksw('A0C00000' + sw[2:4])[0] # GET RESPONSE
 
 		# Unwrap response
 		response = response[(int(response[10:12],16)*2)+12:]
 		return (response[6:], response[2:6])
 
+	def send_wrapped_apdu_ram(self, data):
+		if (len(args.kic) == 0) and (len(args.kid) == 0):
+			#  TAR RAM: 000000, no security (JLM SIM)
+			return self.send_wrapped_apdu_internal(data, '000000', 0, 0, 0)
+		else:
+			# TAR RAM: 000000, sysmoSIM SJS1: MSL = 6, first keyset
+			return self.send_wrapped_apdu_internal(data, '000000', 6, 1, 1)
+
+	def send_wrapped_apdu_rfm_sim(self, data):
+		# TAR RFM SIM:  B00010, sysmoSIM SJS1: MSL = 6, second keyset
+		return self.send_wrapped_apdu_internal(data, 'B00010', 6, 2, 2)
+
+	def send_wrapped_apdu_rfm_usim(self, data):
+		# TAR RFM USIM: B00011, sysmoSIM SJS1: MSL = 6, third keyset
+		return self.send_wrapped_apdu_internal(data, 'B00011', 6, 3, 3)
+
 	def send_wrapped_apdu_checksw(self, data, sw="9000"):
-		response = self.send_wrapped_apdu(data)
+		response = self.send_wrapped_apdu_ram(data)
 		if response[1] != sw:
 			raise RuntimeError("SW match failed! Expected %s and got %s." % (sw.lower(), response[1]))
 		return response
@@ -246,6 +395,9 @@ parser.add_argument('-t', '--list-applets', action='store_true')
 parser.add_argument('--tar')
 parser.add_argument('--dump-phonebook', action='store_true')
 parser.add_argument('--set-phonebook-entry', nargs=4)
+parser.add_argument('--kic', default='')
+parser.add_argument('--kid', default='')
+parser.add_argument('--smpp', action='store_true')
 
 args = parser.parse_args()
 
@@ -261,12 +413,18 @@ else:
 sc = SimCardCommands(sl)
 ac = AppLoaderCommands(sl)
 
-sl.wait_for_card(newcardonly=args.new_card_required)
-time.sleep(args.sleep_after_insertion)
+if not args.smpp:
+	sl.wait_for_card(newcardonly=args.new_card_required)
+	time.sleep(args.sleep_after_insertion)
 
-# Get the ICCID
-print "ICCID: " + swap_nibbles(sc.read_binary(['3f00', '2fe2'])[0])
-ac.send_terminal_profile()
+if not args.smpp:
+	# Get the ICCID
+	print "ICCID: " + swap_nibbles(sc.read_binary(['3f00', '2fe2'])[0])
+	ac.send_terminal_profile()
+
+# for RFM testing
+#ac.test_rfm()
+#exit(0)
 
 if args.pin:
 	sc.verify_chv(1, args.pin)
@@ -308,9 +466,9 @@ if args.set_phonebook_entry:
 	sc.update_record(['3f00','7f10','6f3a'], record_num, record)
 
 if args.list_applets:
-	(data, status) = ac.send_wrapped_apdu('80f21000024f0000c0000000')
+	(data, status) = ac.send_wrapped_apdu_ram('80f21000024f0000c0000000')
 	while status == '6310':
-		(partData, status) = ac.send_wrapped_apdu('80f21001024f0000c0000000')
+		(partData, status) = ac.send_wrapped_apdu_ram('80f21001024f0000c0000000')
 		data = data + partData
 
 	while len(data) > 0:
