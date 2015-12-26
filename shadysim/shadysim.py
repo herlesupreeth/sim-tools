@@ -407,8 +407,13 @@ if args.pcsc is not None:
 elif args.serialport is not None:
 	from pySim.transport.serial import SerialSimLink
 	sl = SerialSimLink(device=args.serialport, baudrate=9600)
+elif args.smpp is not None:
+	class DummySL:
+		pass
+	sl = DummySL()
+	pass
 else:
-	raise RuntimeError("Need to specify either --serialport or --pcsc")
+	raise RuntimeError("Need to specify either --serialport, --pcsc or --smpp")
 
 sc = SimCardCommands(sl)
 ac = AppLoaderCommands(sl)
