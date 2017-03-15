@@ -6,8 +6,8 @@ Use the hello-stk example to get started.
 
 	$ mkdir javacard
 	$ cd javacard
-	$ git clone https://github.com/Shadytel/sim-tools.git
-	$ git clone https://github.com/Shadytel/hello-stk.git
+	$ git clone https://git.osmocom.org/sim/sim-tools
+	$ git clone https://git.osmocom.org/sim/hello-stk
 	$ cd hello-stk
 	$ make
 	
@@ -19,7 +19,7 @@ To install the applet onto a SIM card, first set the type of reader you are usin
 	# For USB-serial readers:
     $ export SHADYSIM_OPTIONS="--serialport /dev/ttyUSB0"
 
-    $ make install
+and follow instructions at https://osmocom.org/projects/cellular-infrastructure/wiki/Shadysimpy
     
 The shadysim tool has lots of other options.
 
