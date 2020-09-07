@@ -398,6 +398,7 @@ parser.add_argument('--set-phonebook-entry', nargs=4)
 parser.add_argument('--kic', default='')
 parser.add_argument('--kid', default='')
 parser.add_argument('--smpp', action='store_true')
+parser.add_argument('--aram-apdu', default='')
 
 args = parser.parse_args()
 
@@ -426,6 +427,18 @@ if not args.smpp:
 	# Get the ICCID
 	print "ICCID: " + swap_nibbles(sc.read_binary(['3f00', '2fe2'])[0])
 	ac.send_terminal_profile()
+
+if len(args.aram_apdu) > 0:
+	# Select the ARA-M applet from its AID
+	aram_rv = rv = ac._tp.send_apdu('00A4040009A00000015141434C0000')
+	if '9000' != aram_rv[1]:
+		raise RuntimeError("SW match failed! Expected %s and got %s." % ('9000', aram_rv[1]))
+	if '80CAFF4000' == args.aram_apdu:
+		raise RuntimeError("Listing of ACR rules in ARA-M not supported yet")
+	# Add/Delete Access rules list in ARA-M
+	rv = ac._tp.send_apdu(args.aram_apdu)
+	if '9000' != rv[1] and '6a88' != rv[1]:
+		raise RuntimeError("SW match failed! Expected %s and got %s." % ('9000', rv[1]))
 
 # for RFM testing
 #ac.test_rfm()
