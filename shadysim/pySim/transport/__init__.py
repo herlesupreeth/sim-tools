@@ -67,8 +67,11 @@ class LinkBase(object):
 		"""
 		data, sw = self.send_apdu_raw(pdu)
 
-		if (sw is not None) and (sw[0:2] == '9f'):
+		if (sw is not None) and ((sw[0:2] == '9f') or (sw[0:2] == '9e') or (sw[0:2] == '61')):
 			pdu_gr = pdu[0:2] + 'c00000' + sw[2:4]
+			data, sw = self.send_apdu_raw(pdu_gr)
+		elif (sw is not None) and (sw[0:2] == '6c'):
+			pdu_gr = pdu[0:len(pdu)-2] + sw[2:4]
 			data, sw = self.send_apdu_raw(pdu_gr)
 
 		return data, sw
