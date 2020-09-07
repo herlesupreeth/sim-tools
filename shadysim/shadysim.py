@@ -25,7 +25,7 @@
 # December 2014, Dieter Spaar: add OTA security for sysmoSIM SJS1
 
 from pySim.commands import SimCardCommands
-from pySim.utils import swap_nibbles, rpad, b2h, i2h
+from pySim.utils import swap_nibbles, rpad, b2h, i2h, h2i
 try:
 	import argparse
 except Exception, err:
@@ -433,12 +433,25 @@ if len(args.aram_apdu) > 0:
 	aram_rv = rv = ac._tp.send_apdu('00A4040009A00000015141434C0000')
 	if '9000' != aram_rv[1]:
 		raise RuntimeError("SW match failed! Expected %s and got %s." % ('9000', aram_rv[1]))
-	if '80CAFF4000' == args.aram_apdu:
-		raise RuntimeError("Listing of ACR rules in ARA-M not supported yet")
 	# Add/Delete Access rules list in ARA-M
 	rv = ac._tp.send_apdu(args.aram_apdu)
 	if '9000' != rv[1] and '6a88' != rv[1]:
 		raise RuntimeError("SW match failed! Expected %s and got %s." % ('9000', rv[1]))
+	if '80CAFF4000' == args.aram_apdu:
+		res = h2i(rv[0])
+		n = 0
+		# REF-AR-DO - Tag value is E2 - Search for starting point of certificate
+		while res[n] != 0xe2:
+			n += 1
+		i = 1
+		total_len = len(res[n:])
+		while n <= total_len:
+			# Additional 2 bytes for REF-AR-DO Tag value E2 and length byte
+			cert_len = res[n+1:n+2][0] + 2
+			cert = ['%02x'% x for x in res[n:n+cert_len]]
+			print "Certificate " + str(i) + ": " + ''.join(cert)
+			i += 1
+			n += cert_len
 
 # for RFM testing
 #ac.test_rfm()
