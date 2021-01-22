@@ -430,7 +430,7 @@ if not args.smpp:
 
 if len(args.aram_apdu) > 0:
 	# Select the ARA-M applet from its AID
-	aram_rv = rv = ac._tp.send_apdu('00A4040009A00000015141434C0000')
+	aram_rv = rv = ac._tp.send_apdu('00A4040009A00000015141434C00')
 	if '9000' != aram_rv[1]:
 		raise RuntimeError("SW match failed! Expected %s and got %s." % ('9000', aram_rv[1]))
 	# Add/Delete Access rules list in ARA-M
