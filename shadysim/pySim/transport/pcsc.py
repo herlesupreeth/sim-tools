@@ -50,6 +50,8 @@ class PcscSimLink(LinkBase):
 			raise NoCardError()
 		self.connect()
 
+		#print "ATR: " + str.upper(i2h(self._con.getATR()))
+
 	def connect(self):
 		try:
 			self._con.connect()
@@ -70,11 +72,18 @@ class PcscSimLink(LinkBase):
 	def send_apdu_raw(self, pdu):
 		"""see LinkBase.send_apdu_raw"""
 
+		str_pdu = str.upper(pdu)
+
+		#print "CMD\t" + ' '.join([str_pdu[i:i+2] for i in range(0, len(str_pdu), 2)]) + ' \\'
+
 		apdu = h2i(pdu)
 
 		data, sw1, sw2 = self._con.transmit(apdu)
 
 		sw = [sw1, sw2]
+
+		#print "RESP: " + str.upper(i2h(sw)) + " " + str.upper(i2h(data))
+		#print "\t" + '(' + str.upper(i2h([sw1])) + ' ' + str.upper(i2h([sw2])) + ')'
 
 		# Return value
 		return i2h(data), i2h(sw)
